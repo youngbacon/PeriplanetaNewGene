@@ -1,0 +1,76 @@
+#########################################
+##### STEP 1 Whole genome alignment #####
+#########################################
+### cactus v2.9.9
+cactus ./jobstore WGA.txt WGA.hal --maxCores 36 --binariesMode local --logFile WGA.log --gpu 1  --configFile config-v2.9.9-keg-patch.xml
+
+### SpeciesLst: All the species in four letters, like "Pame"
+### TarSpeciesLst: All the species in exception of the focal species
+
+### hal v2.2
+KeyS="Pame"
+for i in `cat TarSpeciesLst`
+do
+	halLiftover WGA.hal ${KeyS} ${KeyS}.bed ${i} ${KeyS}_${i}.psl --bedType 4 --outPSLWithName
+	halLiftover WGA.hal ${i} ${i}.bed ${KeyS} ${i}_${KeyS}.psl --bedType 4 --outPSLWithName
+	halLiftover WGA.hal ${KeyS} ${KeyS}_cds.bed ${i} ${KeyS}_${i}_cds.psl --bedType 4 --outPSLWithName
+	halLiftover WGA.hal ${i} ${i}_cds.bed ${KeyS} ${i}_${KeyS}_cds.psl --bedType 4 --outPSLWithName
+done
+
+### psl2bed
+python psl2bed.py -i ${i}.psl -o bed_halLifted/${i}.bed
+
+### bed aggregation
+### -f bed files -c longest length -C CPU numbers
+python bedAggregation.py -f bedLst -c 100 -C 12
+
+###################################
+##### STEP 2 Ortholog mapping #####
+###################################
+### 
+for i in `cat TarSpeciesLst`
+do
+	blastp -query ${KeyS}.protein.fa -db ${i}.protein.fa -outfmt 6 -task blastp -out ${KeyS}_${i}.blast -evalue 0.05
+	blastp -query ${i}.protein.fa -db ${KeyS}.protein.fa -outfmt 6 -task blastp -out ${i}_${KeyS}.blast -evalue 0.05
+
+	cat Pame_${i}.blast ${i}_${KeyS}.blast > ${KeyS}_${i}.blastp
+	rm *blast
+done
+
+### ortholog mapping 
+### -c cutoff -C CPU numbers
+python ortholog_mapping.py -f SpeciesLst -b ${PATHtoBedfiles} -B ${PATHtoBlastpfiles} -c 0.15 -C 12
+
+### ortholog group construction
+### -g focal species
+python ortholog_group.py -f SpeciesLst -p ${PATHtoOrthomappingfile} -g ${KeyS}.genelst  -o cactus_ortholog_group.txt
+
+################################
+##### STEP 3 Gene catagory #####
+################################
+### Reciprocal best hit
+python reciprocal_best_hit.py -i SpeciesLst -p ${PATHtoBlastpfiles} -o ${KeyS}.rbh
+
+### Try to find the unannotated genes
+python write_genewise.py -i cactus_ortholog_group.txt -o ${BashFile}
+bash ${BashFile}
+python ortholog_seq.py -i FileLst -o ${KeyS}_annotated.fa
+blastp -query ${KeyS}_annotated.fa -db ${KeyS}.protein.fa -outfmt 6 -task blastp -out orthoseq.blastp -evalue 1e-5
+python ortholog_seq2.py -i orthoseq.blastp -o ${KeyS}.Orthoseq
+
+### Prepare: Tree.file in nex format
+### OutS: the most distant species of interest. All genes that originated before the common ancestor of this species and KeyS are considered conserved genes, which can be treated as basal groups
+python ortholog_category.py -i cactus_ortholog_group.txt -b ${PATHtoBlastpfiles}/${KeyS}_${KeyS}.blastp -r ${KeyS}.rbh -t Tree.file -s ${KeyS}.Orthoseq -o ${KeyS}.category -k ${KeyS},${OutS}
+
+### filter out low quality group
+python ortholog_filter.py -i Pame.category -e Pame.fpkm.tab -o Pame.category.expressed -u Orphan_uniprot.blastp
+
+### extract orthoseq and orthologs for manual check of de novo genes
+python write_denovo_align.py -i Orphan_group.txt -o ${BashFile}
+bash ${BashFile}
+
+
+
+
+
+
